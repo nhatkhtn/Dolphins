@@ -40,6 +40,15 @@ _orig_mpt_from_pretrained = _mpt_mod.MPTForCausalLM.from_pretrained.__func__
 def _low_mem_mpt_from_pretrained(cls, *args, **kwargs):
     kwargs.setdefault("torch_dtype", torch.float16)
     kwargs.setdefault("low_cpu_mem_usage", True)
+    # Transformers otherwise retains a full checkpoint shard alongside the
+    # model while loading. Offload that temporary state so the 60 GB smoke
+    # allocation can load MPT-7B without changing the resident model.
+    kwargs.setdefault("offload_state_dict", True)
+    if torch.cuda.is_available():
+        # Keep MPT's checkpoint shards in the allocated B200's HBM while
+        # loading. The normal caller moves the finished Flamingo model to
+        # the same device immediately afterward.
+        kwargs.setdefault("device_map", {"": 0})
     return _orig_mpt_from_pretrained(cls, *args, **kwargs)
 
 
@@ -59,7 +68,7 @@ def load_pretrained_model():
     )
 
     checkpoint_path = hf_hub_download("gray311/Dolphins", "checkpoint.pt")
-    state_dict = torch.load(checkpoint_path, map_location="cpu")
+    state_dict = torch.load(checkpoint_path, map_location="cpu", mmap=True)
     model.load_state_dict(state_dict, strict=False)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
